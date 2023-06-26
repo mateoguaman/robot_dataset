@@ -1,8 +1,9 @@
 import collections
 from typing import Optional, Union
 
-import gym
-import gym.spaces
+# import gym
+# import gym.spaces
+import gymnasium as gym
 import jax
 import numpy as np
 
@@ -26,10 +27,14 @@ def _init_replay_dict(
 def _insert_recursively(
     dataset_dict: DatasetDict, data_dict: DatasetDict, insert_index: int
 ):
+    # print("Inside insert recursively")
     if isinstance(dataset_dict, np.ndarray):
+        # print(f"dataset_dict is an np array with shape: {dataset_dict.shape}")
         dataset_dict[insert_index] = data_dict
     elif isinstance(dataset_dict, dict):
-        assert dataset_dict.keys() == data_dict.keys()
+        # print(f"dataset_dict is a dict with keys: {dataset_dict.keys()}")
+        # print(f"data_dict is a dict with keys: {data_dict.keys()}")
+        assert dataset_dict.keys() == data_dict.keys(), print(f"ERROR! dataset_dict.keys: {dataset_dict.keys()}, data_dict.keys: {data_dict.keys()}")
         for k in dataset_dict.keys():
             _insert_recursively(dataset_dict[k], data_dict[k], insert_index)
     else:
@@ -63,15 +68,18 @@ class ReplayBuffer(Dataset):
         self._size = 0
         self._capacity = capacity
         self._insert_index = 0
+        self.datapoints_seen = 0
 
     def __len__(self) -> int:
         return self._size
 
     def insert(self, data_dict: DatasetDict):
+        # import pdb;pdb.set_trace()
         _insert_recursively(self.dataset_dict, data_dict, self._insert_index)
 
         self._insert_index = (self._insert_index + 1) % self._capacity
         self._size = min(self._size + 1, self._capacity)
+        self.datapoints_seen + 1
 
     def get_iterator(self, queue_size: int = 2, sample_args: dict = {}):
         # See https://flax.readthedocs.io/en/latest/_modules/flax/jax_utils.html#prefetch_to_device
