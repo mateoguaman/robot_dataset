@@ -2,11 +2,11 @@
   main_topic: "/multisense/left/image_rect"
   dt: 0.1
   data: 
-    # "/odometry/filtered_odom":
-    #     type: Odometry
-    #     folder: "odom"
-    #     options:
-    #         use_vel: True
+    "/odometry/filtered_odom":
+        type: Odometry
+        folder: "odom"
+        options:
+            use_vel: True
 
     # "/multisense/imu/imu_data":
     #     type: Imu

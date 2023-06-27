@@ -20,7 +20,6 @@ from robot_dataset.data.replay_buffer import ReplayBuffer
 from robot_dataset.config_parser.config_parser import ConfigParser
 
 
-
 class RobotListener(object):
     def __init__(self, config_spec, buffer_capacity=10000, use_stamps=True):
         # '''
@@ -48,6 +47,7 @@ class RobotListener(object):
 
         parser = ConfigParser()
         self.obs_converters, self.action_converters, self.output_names, self.rates, self.dt, self.main_topic, self.obs_space, self.action_space = parser.parse_from_fp(self.config_spec)
+        # TODO: Should make max_queue_len equal to max_rate/min_rate for efficiency
 
         # self.replay_buffer = ReplayBuffer(self.obs_space, self.action_space, self.buffer_capacity)
         self.init_subscribers()
@@ -62,19 +62,50 @@ class RobotListener(object):
         for k in self.action_converters.keys():
             self.subscribers[k] = rospy.Subscriber(k, self.action_converters[k].rosmsg_type(), self.handle_msg, callback_args=k)
 
+    # def init_queue(self):
+    #     self.queue = {}  
+    #     self.times = {} 
+    #     self.curr_time = rospy.Time.now()
+    #     for topic, converter in self.obs_converters.items():
+    #         if self.rates[topic] == self.dt:
+    #             self.queue[topic] = None
+    #         else:
+    #             self.queue[topic] = [None] * self.max_queue_len
+    #             self.times[topic] = [0.] * self.max_queue_len
+
+    #     for topic, converter in self.action_converters.items():
+    #         self.queue[topic] = None
+
     def init_queue(self):
-        self.queue = {}
-        self.times = {}
+        self.queue = {}  
+        self.times = {} 
         self.curr_time = rospy.Time.now()
         for topic, converter in self.obs_converters.items():
             if self.rates[topic] == self.dt:
-                self.queue[topic] = None
+                self.queue[topic] = [None] * 2  # Will keep two timesteps, for current and next observations.
             else:
-                self.queue[topic] = [None] * self.max_queue_len
-                self.times[topic] = [0.] * self.max_queue_len
+                self.queue[topic] = [None] * 2 * self.max_queue_len
+                self.times[topic] = [0.] * 2 * self.max_queue_len
 
         for topic, converter in self.action_converters.items():
-            self.queue[topic] = None
+            self.queue[topic] = [None]
+
+    # def handle_msg(self, msg, topic):
+    #     has_stamp = hasattr(msg, 'header') and msg.header.stamp.to_sec() > 1000.
+    #     has_info = hasattr(msg, 'info') and msg.info.header.stamp.to_sec() > 1000.
+
+    #     if self.use_stamps and (has_stamp or has_info):
+    #         t = msg.header.stamp if has_stamp else msg.info.header.stamp
+    #     else:
+    #         t = rospy.Time.now()
+
+    #     if self.rates[topic] == self.dt:
+    #         self.queue[topic] = msg
+    #     else:
+    #         self.queue[topic] = self.queue[topic][1:] + [msg]
+    #         self.times[topic] = self.times[topic][1:] + [t]
+
+    #     # If main topic, add to replay buffer
 
     def handle_msg(self, msg, topic):
         has_stamp = hasattr(msg, 'header') and msg.header.stamp.to_sec() > 1000.
@@ -86,12 +117,44 @@ class RobotListener(object):
             t = rospy.Time.now()
 
         if self.rates[topic] == self.dt:
-            self.queue[topic] = msg
+            self.queue[topic] = self.queue[topic][1:] + [msg]
         else:
             self.queue[topic] = self.queue[topic][1:] + [msg]
             self.times[topic] = self.times[topic][1:] + [t]
 
         # If main topic, add to replay buffer
+
+    # def get_data(self):
+    #     out = {
+    #         'observations': {},
+    #         'actions': None,
+    #         'next_observations': {},
+    #         'rewards': None,
+    #         'masks': None,
+    #         'dones': None
+    #     }
+
+    #     for topic, converter in self.obs_converters.items():
+    #         if self.rates[topic] == self.dt:
+    #             out['observations'][self.output_names[topic]] = converter.ros_to_numpy(self.queue[topic])
+    #         else:
+    #             # Get the times in seconds at which we have messages in the queue for a given topic
+    #             msg_times = np.array([t.to_sec() for t in self.times[topic]])
+    #             # Look at when the last message was received, and get a target range of times [last-dt, ..., last] that would ideally correspond to the times of a sequence of data
+    #             target_times = np.arange(msg_times[-1] - self.dt, msg_times[-1], self.rates[topic])
+    #             # Creates a matrix of element-wise distances from all members of target_times wo all members of msg_times
+    #             dists = abs(np.expand_dims(target_times, 0) - np.expand_dims(msg_times, 1))
+    #             msg_idxs = np.argmin(dists, axis=0)
+    #             datas = [converter.ros_to_numpy(self.queue[topic[i]]) for i in msg_idxs]
+    #             out['observations'][self.output_names[topic]] = np.stack([x for x in datas], dim=0)
+
+    #     for topic, converter in self.action_converters.items():
+    #         # out['actions'][self.output_names[topic]] = converter.ros_to_numpy(self.queue[topic])
+    #         out['actions'] = converter.ros_to_numpy(self.queue[topic])
+
+    #     out['next_observations'] = out['observations']
+
+    #     return out
 
     def get_data(self):
         out = {
@@ -105,23 +168,26 @@ class RobotListener(object):
 
         for topic, converter in self.obs_converters.items():
             if self.rates[topic] == self.dt:
-                out['observations'][self.output_names[topic]] = converter.ros_to_numpy(self.queue[topic])
+                out['observations'][self.output_names[topic]] = converter.ros_to_numpy(self.queue[topic][0])
+                out['next_observations'][self.output_names[topic]] = converter.ros_to_numpy(self.queue[topic][1])
             else:
+                num_msgs = round(1/self.rates[topic])
                 # Get the times in seconds at which we have messages in the queue for a given topic
                 msg_times = np.array([t.to_sec() for t in self.times[topic]])
                 # Look at when the last message was received, and get a target range of times [last-dt, ..., last] that would ideally correspond to the times of a sequence of data
-                target_times = np.arange(msg_times[-1] - self.dt, msg_times[-1], self.rates[topic])
+                target_times = np.arange(msg_times[-1] - self.dt*2, msg_times[-1], self.rates[topic])
                 # Creates a matrix of element-wise distances from all members of target_times wo all members of msg_times
                 dists = abs(np.expand_dims(target_times, 0) - np.expand_dims(msg_times, 1))
                 msg_idxs = np.argmin(dists, axis=0)
                 datas = [converter.ros_to_numpy(self.queue[topic[i]]) for i in msg_idxs]
-                out['observations'][self.output_names[topic]] = np.stack([x for x in datas], dim=0)
+                out['observations'][self.output_names[topic]] = np.stack([x for x in datas[:num_msgs]], dim=0)
+                out['next_observations'][self.output_names[topic]] = np.stack([x for x in datas[-num_msgs:]], dim=0)
 
         for topic, converter in self.action_converters.items():
             # out['actions'][self.output_names[topic]] = converter.ros_to_numpy(self.queue[topic])
-            out['actions'] = converter.ros_to_numpy(self.queue[topic])
+            out['actions'] = converter.ros_to_numpy(self.queue[topic][0])
 
-        out['next_observations'] = out['observations']
+        # out['next_observations'] = out['observations']
 
         return out
 
@@ -143,7 +209,7 @@ if __name__ == "__main__":
     replay_buffer = ReplayBuffer(robot_listener.obs_space, robot_listener.action_space, buffer_capacity)
 
     # TODO: This should be made more robust: it should either not start until all topics are present or the robot listener should only try to process messages when they are not None
-    print('waiting 1s for topics...')
+    print('waiting 2s for topics...')
     for i in range(10):
         rate.sleep()
 
@@ -155,7 +221,7 @@ if __name__ == "__main__":
 
         rate.sleep()
 
-    # import pdb;pdb.set_trace()
+    import pdb;pdb.set_trace()
 
     images = replay_buffer.dataset_dict['observations']['image_left_color']
     actions = replay_buffer.dataset_dict['actions']

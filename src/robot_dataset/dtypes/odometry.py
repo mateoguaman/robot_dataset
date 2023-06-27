@@ -1,5 +1,7 @@
 import rospy
 import numpy as np
+import gymnasium as gym
+from gymnasium.spaces import Space, Dict, Discrete, Box
 
 from nav_msgs.msg import Odometry
 
@@ -16,6 +18,15 @@ class OdometryConvert(Dtype):
 
     def N(self):
         return 13 if self.use_vel else 7
+    
+    def obs_space(self):
+        if self.use_vel:
+            return Box(low=-np.inf, high=np.inf, shape=(13,), dtype=np.float32) 
+        else:
+            return Box(low=-np.inf, high=np.inf, shape=(7,), dtype=np.float32) 
+        
+    def action_space(self):
+        return None
 
     def rosmsg_type(self):
         return Odometry
