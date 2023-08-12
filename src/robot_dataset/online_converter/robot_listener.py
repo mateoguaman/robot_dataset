@@ -193,7 +193,7 @@ class RobotListener(object):
 
 if __name__ == "__main__":
     # Load spec and get parser
-    config_spec = "/home/mateo/robot_dataset/specs/sample_tartandrive.yaml"
+    config_spec = "/home/mateo/local_phoenix_ws/src/robot_dataset/specs/hdif_lester.yaml"
 
     rospy.init_node('robot_listener')
     rate = rospy.Rate(10)

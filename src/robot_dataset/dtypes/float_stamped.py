@@ -1,7 +1,9 @@
 import rospy
 import numpy as np
+import gymnasium as gym
+from gymnasium.spaces import Space, Dict, Discrete, Box
 
-from rosbag_to_dataset.msg import FloatStamped
+from robot_dataset.msg import FloatStamped
 
 from rosbag_to_dataset.dtypes.base import Dtype
 
@@ -14,6 +16,12 @@ class FloatStampedConvert(Dtype):
 
     def N(self):
         return 1
+    
+    def obs_space(self):
+        return Box(low=-np.inf, high=np.inf, shape=(1,), dtype=np.float64) 
+        
+    def action_space(self):
+        return None
 
     def rosmsg_type(self):
         return FloatStamped

@@ -8,61 +8,79 @@ import numpy as np
 import matplotlib.pyplot as plt
 import wandb
 import pickle
+from functools import partial
+import yaml
+import time
 
 from robot_dataset.data.replay_buffer import ReplayBuffer
 from robot_dataset.online_converter.robot_listener import RobotListener
 from robot_dataset.utils.utils import quaternionToEuler
 from robot_dataset.models.mlp import MLP
 from robot_dataset.models.resnet import ResNet
-from robot_dataset.agents.next_state_mse import NextStateMSE
+# from robot_dataset.models.hdif import CostFourierVelModel
+from learned_cost_map.trainer.model import CostFourierVelModel
+from learned_cost_map.utils.costmap_utils import rosmsgs_to_maps_batch, produce_training_input
+from robot_dataset.agents.mse import MSE
 
 USE_WANDB = True
 
-    
-def transform(batch):
+
+def transform(batch, map_metadata, crop_params, fourier_freqs=None, vel=None):
+    # import pdb;pdb.set_trace()
     obs = batch['observations']
     next_obs = batch['next_observations']
     actions = torch.from_numpy(batch['actions'])
 
-    odom = obs['odom']
-    next_odom = next_obs['odom']
+    odom = obs['state']
+    rgb_map = obs['rgb_map']
+    height_map = obs['height_map']
+    traversability_cost = obs["traversability_cost"]
 
-    # imgs = obs['image_left_color']
-    # next_imgs = obs['image_left_color']
+    if vel == None:
+        vel = np.linalg.norm(odom[:, 7:10], axis=1)
+    else:
+        vel = 3  ## Set to 3 m/s
 
-    # resnet_transform = ResNet18_Weights.DEFAULT.transforms()
-    # trans_imgs = resnet_transform(imgs)
-    # trans_next_imgs = resnet_transform(next_imgs)
+    ## TODO Need to figure out how to convert batch of rgb and height map to msgs 
+    maps = rosmsgs_to_maps_batch(rgb_map, height_map)  # TODO: Need to make rosmsgs_to_maps vectorized
+    input_data = produce_training_input(maps, map_metadata, crop_params, vel=vel, fourier_freqs=fourier_freqs)
 
-    px, py, yaw = odom[:,0], odom[:,1], quaternionToEuler(odom[:,3:7])[:,-1]
-    next_px, next_py, next_yaw = next_odom[:,0], next_odom[:,1], quaternionToEuler(next_odom[:,3:7])[:, -1]
+    ground_truth = torch.from_numpy(traversability_cost)
 
-    # import pdb;pdb.set_trace()
+    return input_data, ground_truth
 
-    pose = np.stack([px, py, yaw], axis=-1)
-    next_pose = np.stack([next_px, next_py, next_yaw], axis=-1)
-    pose_diff = next_pose - pose
-
-    states = torch.from_numpy(pose)
-    ground_truth = torch.from_numpy(pose_diff)
-
-    return states, actions, ground_truth
 
 
 def main():
     ## Define data source (RobotListener or Simulation Environment)
     # Load spec and get parser
-    config_spec = "/home/mateo/robot_dataset/specs/sample_tartandrive.yaml"
-    rospy.init_node('online_trainer')
-    rate = rospy.Rate(10)
+    config_spec = "/home/mateo/local_phoenix_ws/src/robot_dataset/specs/hdif_lester.yaml"
+    map_config = "/home/mateo/local_phoenix_ws/src/learned_cost_map/configs/map_params.yaml"
+    saved_model = "/home/mateo/local_phoenix_ws/src/learned_cost_map/models/train_CostFourierVelModel_lr_3e-4_g_99e-1_bal_aug_l2_scale_10.0/epoch_50.pt"
+    saved_freqs = "/home/mateo/local_phoenix_ws/src/learned_cost_map/models/train_CostFourierVelModel_lr_3e-4_g_99e-1_bal_aug_l2_scale_10.0/fourier_freqs.pt"
+    # import pdb;pdb.set_trace()
+    with open(map_config, "r") as file:
+        map_info = yaml.safe_load(file)
+    map_metadata = map_info["map_metadata"]
+    crop_params = map_info["crop_params"]
+
+    rospy.init_node('online_hdif')
+    dt = 0.1
+    rate = rospy.Rate(int(1/dt))
     robot_listener = RobotListener(config_spec=config_spec)
     print("Robot Listener set up")
 
     ## Define agent similar to BC (take in model, take in batch, return MSE loss)
-    model = MLP(state_dim=3, action_dim=2, latent_dim=32)
+    model = CostFourierVelModel(input_channels=8, ff_size=16, embedding_size=512, mlp_size=512, output_size=1, pretrained=False)
+    model.load_state_dict(torch.load(saved_model))
+    fourier_freqs = torch.load(saved_freqs)
     print("Model defined")
-    data_transform = transform
-    agent = NextStateMSE()
+
+    ## Define data transform
+    data_transform = partial(transform, map_metadata=map_metadata, crop_params=crop_params, fourier_freqs=fourier_freqs)
+    
+    ## Define agent
+    agent = MSE()  ## TODO define agent for HDIF, MSE
     print("Agent defined")
 
     model.to("cuda")
@@ -82,7 +100,7 @@ def main():
     batch_size = 64
     training_freq = 10
     save_freq = 10
-    save_dir = "/media/mateo/MateoSSD/online_training"
+    save_dir = "/media/mateo/MateoSSD/online_hdif"
     if not os.path.exists(save_dir):
         os.makedirs(save_dir)
 
@@ -99,6 +117,14 @@ def main():
     print('waiting 2s for topics...')
     for i in range(10):
         rate.sleep()
+
+    # with open("/media/mateo/MateoSSD/online_hdif/datasets/buffer_200.pickle", 'rb') as pickle_file:
+    #     replay_buffer = pickle.load(pickle_file)
+    # replay_buffer = pickle.load("/media/mateo/MateoSSD/online_hdif/datasets/buffer_200.pickle")
+    # batch = replay_buffer.sample(batch_size=batch_size)
+    # train_metrics = agent.update(model, batch, data_transform, optimizer)
+    # loss = train_metrics["loss"]
+    # print(f"Training loss: {loss}")
 
     while (not rospy.is_shutdown()) and (count < lifetime):
         print(f"Iteration {count}/{lifetime}")
@@ -129,7 +155,8 @@ def main():
 
             torch.save(model.state_dict(), model_file)
         count += 1
-        rate.sleep()
+        # rate.sleep()
+        time.sleep(dt)
 
 if __name__ == "__main__":
     main()

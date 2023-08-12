@@ -1,5 +1,7 @@
 import rospy
 import numpy as np
+import gymnasium as gym
+from gymnasium.spaces import Space, Dict, Discrete, Box
 
 from std_msgs.msg import Float64
 
@@ -14,6 +16,12 @@ class Float64Convert(Dtype):
 
     def N(self):
         return 1
+    
+    def obs_space(self):
+            return Box(low=-np.inf, high=np.inf, shape=(1,), dtype=np.float64) 
+        
+    def action_space(self):
+        return None
 
     def rosmsg_type(self):
         return Float64
